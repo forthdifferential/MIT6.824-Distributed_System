@@ -10,7 +10,6 @@ package raft
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -1121,7 +1120,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 
 		if disconnect {
 			cfg.disconnect(victim)
-			log.Printf("cfg.disconnect(%v)", victim) // 23.5.7
+			//log.Printf("cfg.disconnect(%v)", victim) // 23.5.7
 			cfg.one(rand.Int(), servers-1, true)
 		}
 		if crash {
