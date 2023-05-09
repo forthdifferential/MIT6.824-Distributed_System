@@ -361,7 +361,7 @@ func (rf *Raft) installSnapshotLeader(serverId int, args *InstallSnapshotArgs) {
 		if reply.Term > rf.currentTerm {
 			rf.UpdateState(STATE_FOLLOWER)
 			rf.currentTerm = reply.Term
-			rf.voteFor = -1
+			//rf.voteFor = -1
 			rf.persistState()
 			return
 		}
@@ -812,7 +812,7 @@ func (rf *Raft) appendEntriesLeader(serverId int, args *AppendEntriesArgs) {
 		if reply.Term > args.Term {
 			rf.UpdateState(STATE_FOLLOWER)
 			rf.currentTerm = reply.Term
-			rf.voteFor = -1
+			//rf.voteFor = -1
 			rf.persistState()
 			return
 		}
