@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
 const Debug = false
@@ -18,11 +20,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Optype   string //  Get / Put / Append
+	Key      string
+	Value    string
+	ClientID int64
+	RpcID    int
 }
 
 type KVServer struct {
@@ -35,15 +41,113 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	database   map[string]string
+	requsetTab map[int64]requestEntry
+	//receiveVCond *sync.Cond
+	chanMap map[int]chan string
 }
-
+type requestEntry struct {
+	rpcID int
+	value string
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+
+	// 检查leader
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Success, reply.Err = false, "not leader"
+		return
+	}
+
+	// 重复检测
+	if ok, value := kv.checkRpc(args.ClientID, args.RpcID); ok {
+		reply.Success, reply.Value = true, value
+		return
+	}
+
+	// start 日志添加
+	timer := time.NewTimer(500 * time.Millisecond)
+
+	option := Op{
+		Optype:   "Get",
+		Key:      args.Key,
+		ClientID: args.ClientID,
+		RpcID:    args.RpcID,
+	}
+
+	index, _, isLeader := kv.rf.Start(option)
+	if !isLeader {
+		reply.Success, reply.Err = false, "not leader"
+		return
+	}
+
+	// 等待apply后回复
+
+	ch := kv.getOrMakeCh(index)
+
+	DPrintf("{S%v}等待一致性通过或超时,Optype: Get,{C%v},RpcID: %v,Key %v", kv.me, args.ClientID, args.RpcID, args.Key)
+
+	select {
+	case <-timer.C:
+		DPrintf("{S%v} 超时, {C%v} rpcId: %v", kv.me, args.ClientID, args.RpcID)
+		reply.Success, reply.Err = false, "time out"
+
+	case val := <-ch:
+		DPrintf("{S%v} 成功, {C%v} rpcId: %v", kv.me, args.ClientID, args.RpcID)
+		reply.Success, reply.Value = true, val
+	}
+
+	kv.deleteCh(index)
+
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
+	// 检查leader
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.Success, reply.Err = false, "not leader"
+		return
+	}
+
+	// 重复检测
+	if ok, _ := kv.checkRpc(args.ClientID, args.RpcID); ok {
+		DPrintf("重复RPC: %v", args.RpcID)
+		reply.Success = true
+		return
+	}
+
+	// start 日志添加
+	timer := time.NewTimer(500 * time.Millisecond)
+	option := Op{
+		Optype:   args.Optype,
+		Key:      args.Key,
+		Value:    args.Value,
+		ClientID: args.ClientID,
+		RpcID:    args.RpcID,
+	}
+
+	index, _, isLeader := kv.rf.Start(option)
+	if !isLeader {
+		reply.Success, reply.Err = false, "not leader"
+		return
+	}
+
+	// 等待apply后回复
+	ch := kv.getOrMakeCh(index)
+	DPrintf("{S%v}提交，等待一致性通过或超时,Optype: Get,{C%v},RpcID: %v,Key %v", kv.me, args.ClientID, args.RpcID, args.Key)
+
+	select {
+	case <-timer.C:
+		DPrintf("{S%v} 超时, {C%v} rpcId: %v", kv.me, args.ClientID, args.RpcID)
+		reply.Success, reply.Err = false, "time out"
+	case <-ch:
+		DPrintf("{S%v} 成功, {C%v} rpcId: %v", kv.me, args.ClientID, args.RpcID)
+		reply.Success = true
+	}
+	timer.Stop()
+	kv.deleteCh(index)
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -54,10 +158,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // code to Kill(). you're not required to do anything
 // about this, but it may be convenient (for example)
 // to suppress debug output from a Kill()ed instance.
+// 当不再需要KVServer实例时，测试人员会调用Kill（）。
+// 为了您的方便，我们提供了设置rf.dead的代码（不需要锁），以及在长时间运行的循环
+// 中测试rf.dead的killed（）方法。您也可以将自己的代码添加到Kill（）中。
+// 您不需要对此做任何操作，但可以方便地（例如）抑制Kill（）ed实例的调试输出。
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	DPrintf("{server %v} kill", kv.me)
 }
 
 func (kv *KVServer) killed() bool {
@@ -77,6 +186,13 @@ func (kv *KVServer) killed() bool {
 // you don't need to snapshot.
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
+// servers[]包含一组服务器的端口，这些服务器将通过Raft进行协作以
+// 形成容错K/V服务。me是服务器[]中当前服务器的索引。k/v服务器
+// 应通过底层Raft实现存储快照，该实现应调用persister.SaveStateAndSnapshot（）
+// 以原子方式将Raft状态与快照一起保存。k/v服务器应该在Raft的保存状态超过
+// maxraftstate字节时进行快照，以便允许Raft垃圾收集其日志。如果maxraftstate为-1，
+// 则不需要进行快照。StartKVServer（）必须快速返回，因此它应该启动goroutines
+// 对于任何长时间运行的工作。
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -87,11 +203,130 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.database = make(map[string]string)
+	kv.requsetTab = make(map[int64]requestEntry)
+	kv.chanMap = make(map[int]chan string)
+	kv.applyCh = make(chan raft.ApplyMsg, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
 	// You may need initialization code here.
+	//kv.receiveVCond = sync.NewCond(&kv.mu)
+
+	go kv.receiver() // 接收raft apply的条目 并处理
 
 	return kv
+}
+
+func (kv *KVServer) receiver() {
+	// 阻塞的读取chanl
+	for !kv.killed() {
+		select {
+		case recv_msg := <-kv.applyCh:
+			recvOp := recv_msg.Command.(Op)
+			// 应用
+			DPrintf("//// {S%v} receive,Optype: %v,{C%v},RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+
+			commentRet := kv.apply(recvOp)
+			// DPrintf("SERVER {server %v} success apply Optype: %v,ClientID: %v,RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+
+			// 唤醒 返回结果
+			// 只有leader在处理RPC,只有通道还没被删除的时候需要返回
+			if _, isleader := kv.rf.GetState(); isleader {
+
+				if ch, ok := kv.getChIfHas(recv_msg.CommandIndex); ok {
+					ch <- commentRet
+				} else {
+					DPrintf("{S%v} 没有这个通道了 {C%v},RpcID: %v", kv.me, recvOp.ClientID, recvOp.RpcID)
+				}
+
+			}
+		}
+
+	}
+
+}
+
+func (kv *KVServer) apply(recvOp Op) string {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	commentRet := "" // 操作结果
+
+	// 检查是否重复执行
+	if request_entry, ok := kv.requsetTab[recvOp.ClientID]; ok && recvOp.RpcID == request_entry.rpcID {
+		// 已有的条目 直接返回结果
+		DPrintf("!!!! {S%v} cmd already apply Optype: %v,{C%v},RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+		if recvOp.Optype == "Get" {
+			commentRet = request_entry.value
+		}
+		return commentRet
+	}
+
+	// 新的条目
+	// 执行
+	if recvOp.Optype == "Put" {
+		kv.database[recvOp.Key] = recvOp.Value
+	} else if recvOp.Optype == "Append" {
+		kv.database[recvOp.Key] += recvOp.Value
+	}
+	// 更新数据库
+	newEntry := requestEntry{
+		rpcID: recvOp.RpcID,
+	}
+	if recvOp.Optype == "Get" {
+		if value, ok := kv.database[recvOp.Key]; ok {
+			newEntry.value = value
+		} else {
+			newEntry.value = ""
+		}
+		commentRet = newEntry.value
+	}
+	// 更新表
+	kv.requsetTab[recvOp.ClientID] = newEntry
+	DPrintf("{S%v}更新表kv.requsetTab[%v] latest RPCid: %v ", kv.me, recvOp.ClientID, newEntry.rpcID)
+	return commentRet
+}
+
+func (kv *KVServer) checkRpc(clientId int64, rpcId int) (bool, string) {
+	// 检查表
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// 已经执行RPC请求
+	equset_entry, ok := kv.requsetTab[clientId]
+	if ok && equset_entry.rpcID == rpcId {
+		return true, equset_entry.value
+	}
+	//DPrintf("重复检测，ok: %v, equset_entry.rpcID: %v == rpcId: %v ", ok, equset_entry.rpcID, rpcId)
+	return false, ""
+}
+
+func (kv *KVServer) getOrMakeCh(index int) chan string {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if _, ok := kv.chanMap[index]; !ok {
+		kv.chanMap[index] = make(chan string, 1)
+		DPrintf("{S%v}创建chan[index: %v]", kv.me, index)
+	}
+
+	return kv.chanMap[index]
+
+}
+
+func (kv *KVServer) getChIfHas(index int) (chan string, bool) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	ch, ok := kv.chanMap[index]
+	if !ok {
+		DPrintf("{S%v}不存在chan[index: %v]", kv.me, index)
+	}
+	return ch, ok
+}
+
+func (kv *KVServer) deleteCh(index int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	delete(kv.chanMap, index)
+
 }
