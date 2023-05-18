@@ -44,7 +44,7 @@ type KVServer struct {
 	// Your definitions here.
 	database   map[string]string
 	requsetTab map[int64]requestEntry
-	//receiveVCond *sync.Cond
+
 	chanMap map[int]chan string
 }
 type requestEntry struct {
@@ -147,6 +147,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		DPrintf("{S%v} 成功, {C%v} rpcId: %v", kv.me, args.ClientID, args.RpcID)
 		reply.Success = true
 	}
+
 	timer.Stop()
 	kv.deleteCh(index)
 }
@@ -210,7 +211,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
-
 	kv.readSnapshot(kv.rf.GetSnapshot())
 
 	go kv.receiver() // 接收raft apply的条目 并处理
@@ -226,16 +226,19 @@ func (kv *KVServer) receiver() {
 			// Op
 			if recv_msg.CommandValid {
 				DPrintf("//// {S%v} receive Op,index[%v]", kv.me, recv_msg.CommandIndex)
+				// for test 3B
 				if recv_msg.Command == nil {
 					DPrintf("{S%v} 空的recv_msg[%v]", kv.me, recv_msg)
 				}
+
 				recvOp := recv_msg.Command.(Op)
 
+				// for test 3B
 				DPrintf("{S%v} receive Op,client[%v],RpcID:[%v],Key [%v]", kv.me, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
 				if recvOp.Optype != "Get" {
 					DPrintf("看看重复检查有没有问题{S%v} receive Op,Optype[%v],Key [%v],Value[%v]", kv.me, recvOp.Optype, recvOp.Key, recvOp.Value)
-
 				}
+
 				// 检查快照
 				DPrintf("{S%v}检查缓存大小", kv.me)
 				if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate-8 {
@@ -245,15 +248,12 @@ func (kv *KVServer) receiver() {
 						DPrintf("{S%v}快照完成，通知raft persist", kv.me)
 						kv.rf.Snapshot(recv_msg.CommandIndex-1, snapshot)
 					}
-
 				}
 
 				// 应用
 				commentRet := kv.apply(recvOp)
-				// DPrintf("SERVER {server %v} success apply Optype: %v,ClientID: %v,RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
 
-				// 唤醒 返回结果
-				// 只有leader在处理RPC,只有通道还没被删除的时候需要返回
+				// 唤醒 返回结果 只有leader在处理RPC,只有通道还没被删除的时候需要返回
 				if _, isleader := kv.rf.GetState(); isleader {
 
 					if ch, ok := kv.getChIfHas(recv_msg.CommandIndex); ok {
@@ -261,11 +261,8 @@ func (kv *KVServer) receiver() {
 					} else {
 						DPrintf("{S%v} 没有这个通道了 {C%v},RpcID: %v", kv.me, recvOp.ClientID, recvOp.RpcID)
 					}
-
 				}
-
 			}
-
 			// Snapshot
 			if recv_msg.SnapshotValid {
 				DPrintf("//// {S%v} receive Snapshot,index: %v", kv.me, recv_msg.SnapshotIndex)
@@ -273,12 +270,9 @@ func (kv *KVServer) receiver() {
 					DPrintf("{S%v}快照有效，开始应用到状态机", kv.me)
 					kv.readSnapshot(recv_msg.Snapshot)
 				}
-
 			}
 		}
-
 	}
-
 }
 
 func (kv *KVServer) apply(recvOp Op) string {
@@ -297,8 +291,7 @@ func (kv *KVServer) apply(recvOp Op) string {
 		return commentRet
 	}
 
-	// 新的条目
-	// 执行
+	// 执行新的条目
 	if recvOp.Optype == "Put" {
 		kv.database[recvOp.Key] = recvOp.Value
 	} else if recvOp.Optype == "Append" {
@@ -347,12 +340,12 @@ func (kv *KVServer) getOrMakeCh(index int) chan string {
 	}
 
 	return kv.chanMap[index]
-
 }
 
 func (kv *KVServer) getChIfHas(index int) (chan string, bool) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
 	ch, ok := kv.chanMap[index]
 	if !ok {
 		DPrintf("{S%v}不存在chan[index: %v]", kv.me, index)
@@ -369,7 +362,6 @@ func (kv *KVServer) deleteCh(index int) {
 }
 
 func (kv *KVServer) generateSnapshot(index int) (bool, []byte) {
-
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
@@ -402,7 +394,6 @@ func (kv *KVServer) generateSnapshot(index int) (bool, []byte) {
 	snapshot := newBuf.Bytes()
 
 	DPrintf("{S%v} persist 快照,lastIncludedIndex[%v]", kv.me, kv.lastIncludedIndex)
-
 	return true, snapshot
 }
 
@@ -432,7 +423,6 @@ func (kv *KVServer) readSnapshot(data []byte) {
 		kv.database = old_database
 		DPrintf("{S%d}: Decode success,old_lastincludedindex[%v]", kv.me, kv.lastIncludedIndex)
 	}
-
 }
 
 func (kv *KVServer) snapshotValid(index int) bool {

@@ -82,7 +82,7 @@ MapReduce的思想是，应用程序设计人员和分布式运算的使用者�
 
 开销昂贵的部分即shuffle，map的结果经过shuffle按照一定的顺序整理/排序，然后才分发给不同的reduce处理。这里shuffle的操作理论比map、reduce昂贵。
 
-## 论文
+## MapReduce
 
 输入一组kv，生成一组kv。
 
@@ -714,6 +714,16 @@ raft也是一样
 
 ## Raft
 
+### 复制状态机
+
+复制状态机（Replicated State Machine，简称RSM）是一种分布式系统的设计模式。在该模式下，一个服务或应用程序的状态机被复制到多个节点上并进行并行处理，以提高可用性和性能。
+
+具体地说，采用复制状态机的系统中，对于某个特定的客户端请求，它将被发送到所有复制的状态机或者其中的一组。然后，每个状态机独立地执行相同的操作序列，并生成相同的结果。最终，生成的结果将会被汇总并返回给客户端。
+
+通过这种方式，复制状态机可以将单点故障风险降至最低并提高系统的可靠性。此外，由于并行执行相同的操作序列，该模式还能够提供更好的性能和可伸缩性。
+
+复制状态机是一种常见的分布式系统设计模式，在诸如Google、Facebook和Amazon等互联网巨头公司的分布式系统中得到广泛应用。
+
 ### 单点故障
 
 前面介绍过的复制系统，都存在单点故障问题(single point of failure)。
@@ -728,7 +738,7 @@ raft也是一样
 
 **为什么单机管理能避免脑裂问题** ？
 
-比如有两个strorage，要选出primary，那可能有网络分区的原因，storage两个分区产生两个primary
+比如有两个strorage，要选出primary，那可能有网络分区的原因，storage两个分区产生两个primary，对外界的client来说有两种不同的
 
 ### 大多数原则 majority rule
 
@@ -882,6 +892,10 @@ followers收不到leaders的心跳，election time超时，开始重新选举，
 - 同时，有时候请求会失败，或者Raft底层失败，导致重复请求，而我们需要有手段辨别重复的请求。通常可以在get、put请求上加上请求id或其他标识来区分每个请求。一般维护这些请求id的服务，被称为clerk。提供服务的应用程序通过clerk维护每个请求对应的id，以及一些集群信息。
 
 ## Lab2
+
+<img src="D:\MyTxt\typoraPhoto\image-20230508170955517.png" alt="image-20230508170955517" style="zoom:33%;" />
+
+![image-20230508171059069](D:\MyTxt\typoraPhoto\image-20230508171059069.png)
 
 Raft 复制状态机协议
 
@@ -1165,4 +1179,291 @@ klchen@vmware:~/project/MIT6.824$ git push --set-upstream origin master
 4. 执行 git commit -m "rm old_git"
 5. 执行git push origin [branch name]  git push
 ```
+
+### 总结
+
+1. raft集群一般是3 5 个，单数防止脑裂，一个服务器损坏的平均情况大概是几个月一次，所以3 5 个足够修复恢复了
+2. 服务器遇到的问题会有网络分区联系不上、机器故障挂了等
+
+有空看看Paxos，因为这是最经典的一致性算法
+
+## Zookeeper
+
+### 线性一致性
+
+关于历史记录的定义，而不是关于系统的定义，也就是说这个系统对外界的请求表现出的是线性一致性。
+
+计算机执行的序列，同时满足一下两个，就说明请求历史数据是线性的
+
+1. 序列中的请求的顺序与实际时间匹配
+
+2. 每个读请求看到的都是序列中前一个写请求写入的值
+
+反之，如果序列的规则生成了一个带环的图，那么请求历史数据不是线性一致性的。
+
+**重点是说**：1. 对于系统执行写请求，只能有一个顺序，所有客户端读到的数据的顺序，必须与系统执行写请求的顺序一致。
+
+2. 对于读请求不允许返回旧的数据，只能返回最新的数据。或者说，对于读请求，线性一致系统只能返回最近一次完成的写请求写入的值。
+
+这点在分布式系统中，不容易保证，因为副本很多，而在单个服务器的情况下天然保证。
+
+* 一个符合线性一致性但是看起来回复不一致的情况：
+
+客户端请求后一直没收到回复，重新发送请求，可能会受到上一次处理的结果，而不是最新的结果。
+可能的原因是如果这是因为第一次系统执行完毕了并返回了，而响应故障或者回复报文网络丢包了，系统建立一个表存储为此客户端处理过的结果。
+
+### Zookeeper介绍
+
+Raft实际上就是一个库。你可以在一些更大的多副本系统中使用Raft库。但是Raft不是一个你可以直接交互的独立的服务，你必须要设计你自己的应用程序来与Raft库交互。
+
+Zookeeper看成一个类似于Raft的多副本系统，运行在Zab（和Raft一样）之上。
+
+为了提高系统的性能，需要把除了leader外的服务器用起来，但是线性一致性的要求表示只能通过leader交互，因为不能保证follower的日志是up-to-date。Zookeeper 的做法是不保证线性一致性，把读操作分摊给所有的peer处理，这说明请求一些落后的副本的时候可能会读取到一些旧的数据。
+
+### Zookeeper的一致性保证
+
+1. 保证写请求是线性一致性的，也就是执行是按照一致性的顺序；但是读一致性不考虑，不需要经过leader，可能会返回旧数据
+2. 任何一个客户端的请求都会按照顺序执行（通常是看系统不一定会顺序执行的），FIFO，可能的实现是为所有请求打上编号，然后leader节点遵从这个顺序。
+
+FIFO的实现注意：
+
+1. 如果客户端在一个S读取，这个S挂了，切换到下一个S的时候，那从下一个S读取的数据必须要在上一次读取数据的log的后面。 也就是说第二个读请求至少要看到第一个读请求的状态！
+
+​	  如果在这个位置的log之前，那新的S会阻塞客户端的响应或者告诉他找其他的S试试。
+
+2. 对于单个的客户端，因为FIFO的要求，所以读写的线性一致性实际上能保证。比如一个写一个读，写给leader 17，读给了follower读，要阻塞到写完17才能读到17 ，不然客户端收到的回复很奇怪。
+
+### Zookeeper的同步操作 （sync）
+
+弥补非严格线性一致的方法是设计了一个操作类型是sync，效果相当于写请求。
+
+如果我需要读最新的数据，我需要发送一个sync请求，之后再发送读请求。这个读请求可以保证看到sync对应的状态，所以可以合理的认为是最新的。但是同时也要认识到，这是一个代价很高的操作，因为我们现在将一个廉价的读操作转换成了一个耗费Leader时间的sync操作
+
+### Zookeeper应用场景
+
+如果你有一个大的数据中心，并且在数据中心内运行各种东西，比如说Web服务器，存储系统，MapReduce等等。你或许会想要再运行一个包含了5个或者7个副本的Zookeeper集群，因为它可以用在很多场景下。之后，你可以部署各种各样的服务，并且在设计中，让这些服务存储一些关键的状态到你的全局的Zookeeper集群中。
+
+### Zookeeper中watch通知
+
+大体上讲 ZooKeeper 实现的方式是通过客服端和服务端分别创建有观察者的信息列表。客户端调用 getData、exist 等接口时，首先将对应的 Watch 事件放到本地的 ZKWatchManager 中进行管理。服务端在接收到客户端的请求后根据请求类型判断是否含有 Watch 事件，并将对应事件放到 WatchManager 中进行管理。
+
+在事件触发的时候服务端通过节点的路径信息查询相应的 Watch 事件通知给客户端，客户端在接收到通知后，首先查询本地的 ZKWatchManager 获得对应的 Watch 信息处理回调操作。这种设计不但实现了一个分布式环境下的观察者模式，而且通过将客户端和服务端各自处理 Watch 事件所需要的额外信息分别保存在两端，减少彼此通信的内容。大大提升了服务的处理性能。
+
+需要注意的是客户端的 Watcher 机制是一次性的，触发后就会被删除。
+
+### API
+
+Znode类型
+
+- regular：常规节点，它的容错复制了所有的东西
+- ephemeral：临时节点，节点会自动消失。比如session消失或Znode有段时间没有传递heartbeat，则Zookeeper认为这个Znode到期，随后自动删除这个Znode节点
+- sequential：顺序节点，它的名字和它的version有关，是在特定的znode下创建的，这些子节点在名字中带有序列号，且节点们按照序列号排序（序号递增）。
+
+一些API用RPC调用暴露
+
+### Ready file(znode)
+
+Master节点在Zookeeper中维护了一个配置，这个配置对应了一些file（也就是znode）。通过这个配置，描述了有关分布式系统的一些信息，例如所有worker的IP地址，或者当前谁是Master。所以，现在Master在更新这个配置，同时，或许有大量的客户端需要读取相应的配置，并且需要发现配置的每一次变化 。
+
+尽管配置被分割成了多个file，还需要保证有原子效果的更新：
+
+如果Ready file存在，那么允许读这个配置。如果Ready file不存在，那么说明配置正在更新过程中，我们不应该读取配置。所以，如果Master要更新配置，那么第一件事情是删除Ready file。之后它会更新各个保存了配置的Zookeeper file（也就是znode），这里或许有很多的file。当所有组成配置的file都更新完成之后，Master会再次创建Ready file。
+
+### Zookeeper实现计数器
+
+处理并发的客户端请求，不能用单纯的读写数据库的方式，而且Zookeeper本身可能返回旧值，这也要考虑。
+
+```
+    WHILE TRUE:
+    X, V = GETDATA("F")
+    IF SETDATA("f", X + 1, V): // leader节点执行 ，要求读到最新的数据且版本号还没被修改
+        BREAK
+```
+
+方式是min-transaction，mini版的事务的实现，把读-更改-写作为一个原子操作
+
+## lab3
+
+FT-kv存储，是复制状态机；
+
+clien向k/v service发送三个RPC：Put Append Get，其中是Clerk 与 Client交互，Clerk通过RPC与servers交互。
+
+Get/Put/Append 方法需要是线性的，对外表现是一致的，我理解就是说并发情况下 对外表现的线性一致性：
+
+后一次请求必须看到前一次的执行后端状态；并发请求选择相同的执行顺序，避免不是最新状态回复客户端；在故障之后保留所有确认的客户端更新的方式恢复状态
+
+### 3A
+
+每个kv service有一个raft peer，Clerks把Get/Put/Append  RPC发送给leader的kv service，进一步交给Raft，Raft日志保存这些操作，所有的kv service按顺序执行这些操作，应用到kv数据库，达到一致性
+
+1. Clerk找leader所在kv service和重试RPC的过程；
+2. 应用到状态机后leader通过响应RPC告知Clerk结果，如果操作失败（比如leader更换），报告错误，让他重试
+3. kv service之间不能通信，只有raft peer之间RPC交互
+
+### 构思：
+
+主要过程： Clerk把操作包装Op发送 PRC给 所有server，如果server是leader就开始发给raft，raft同步完成后apply给server，server执行这个Op,返回给Clerk结果。
+
+如果raft的applier超时，RPC回复超时，因为是旧leader，所以等到下一个term再发送RPC给新leader的server。
+
+### 重复RPC检测
+
+如果收不到RPC回复（no reply）,一种可能是server挂了，可能换一个重新请求；但是另一种是执行了但是 reply丢包了，这时候重新发的话会破坏线性一致性。 
+
+解决方案是重复RPC检测：
+
+clerk每次发RPC都发一个ID，一个Request一个ID，重发相同；在server中维护一个表记录ID对应的结果，提前检测是否处理过；Raft的日志中也要存这个ID，以便新的leader的表是正确的
+
+如果之前的请求还没执行，那会重新start一个，然后等第一个执行完后表就有了，applCh得到第二个的时候看表再决定不执行了。也就是有两个一样的log 没关系的
+
+### 请求表的设计
+
+每个客户端一个条目，存着最后一次执行的RPC：
+
+每个client同时只有一个未完成的RPC，每个client对PRC进行编号；也就是说当客户端发送第10的条目，那之前的都可以不要，因为之前的RPC都不会重发了；
+
+执行完成后才更新条目，index是clientID，值是保留值和编号，
+
+### client
+
+每个client有一个clientID，是一个64位的随机值 
+
+client发送PRC中有 clientID 和 rpcID ，重发的RPC序号相同
+
+
+
+如果执行完被leaderID索引，内容仅包含序号和值
+
+RPC处理程序首先检查表格，只有在序号>表格条目时才Start()s
+
+每个日志条目必须包括客户端ID、序号
+
+当操作出现在applyCH上时，更新client's table entry中的序号和值，唤醒正在等待的RPC处理程序(如果有)
+
+
+
+### 3A-bug
+
+1. 一个clerk就是一个client调用的，所以clientId应该在clerk结构里，之前我是 每个请求随机生成了一个clientId，这是不太合理的
+
+2. 处理RPC超时不是 !ok表示的，应该要自己设置时间。本来使用的是条件变量等着表的更新，但是用select chanl可以用非阻塞处理处理不同的通道，而且可以直接传递变量，不需要重新查表了。 原代码
+
+   ```cpp
+   	if !isLeader {
+   		reply.Success, reply.Err = false, "not leader"
+   		return
+   	}
+   
+   	for !kv.killed() {
+   		if equset_entry, ok := kv.requsetTab[args.ClientID]; ok {
+   			if args.RpcID <= equset_entry.rpcID {
+   				// 已经执行RPC请求
+   				reply.Success, reply.Value = true, equset_entry.value
+   				return
+   			}
+   		} else {
+   			DPrintf("SERVER {server %v}等待一致性通过,Optype: Get,ClientID: %v,RpcID: %v,Key %v", kv.me, args.ClientID, args.RpcID, args.Key)
+   			kv.receiveVCond.Wait()
+   		}
+   	}
+   ```
+
+   定时器控制RPC超时 ，chanl传入处理完的数据
+
+   疑问：定时器应该是一个函数一个还是放到server结构里，chanl也是一个函数一个，那开销好像比较大
+
+   用 map[int]chan int处理 对应不同的index，提交时到对应chan中，index的唯一性。
+
+   考虑添加chan和删除，delete(kv.chanMap, 1)   删除键为1的元素，自动销毁chan，考虑请求满足之后就会删除，同时存在chan也不多，先采用这种方案
+
+2. 设计是定时器在server中，那server如果挂了，也是没有reply，不返回了，这种情况怎么解决？
+
+这是服务器的问题，不是raft一致性没有达到，应该是RPC会返回false。
+
+4. 看起来client认为的server编号和server自己编号不一致，把前者不打出log以免出错
+
+   问题还有是重复检测发生在检查leader之前了，那可能不是leader但因为同步执行到了，也能返回，然后client更新了错误的leader。
+
+   修改了原来的结构，改为先检查leader，然后重复检测，然后再start
+
+5. **难改bug**TestSpeed3A 要求每个心跳周期至少处理三次client的请求，但是我的raft中，start收到新条目不会马上同步，而是等下一次心跳来同步。这个TestSpeed3A 是同一个客户端发送一千次append，RPC接受函数阻塞在那直到apply后回复，而我每次都是一个心跳处理一次，就会导致一个心跳周期值处理一个请求。
+
+​		具体表现是：rpc一致性通过，执行完成，返回通道的时候超时了，然后一直重复超时
+
+先改为start( )之后就发起心跳，试试
+
+server处理操作的PRC超时时间设置有点不清楚，改到800ms这样大可以减小TestSpeed3A 不通过的概率，但是跑多了还是会有个错误。只可能原因是高并发多请求的时候apply处理不过来了
+
+5.2 这中间还有一个bug，就是raft一致性达成了而且apply了太快了，通道还没make。那就不传这个通道，等超时返回，并在下一次RPC的重复检验的时候直接取到值
+
+6. applCh拿到后发现表中已经有rpc，没有执行也没有返回，导致RPC得不到回复。
+
+正确的做法是不执行，但是要返回值。查看rpc通道还存不存在，如果存在，说明上一次没有回复rpc（可能是上次chanl还没创建好）；如果不存在，说明这个条目是重复的条目，不需要返回RPC了
+
+7. 好看点的写法是函数中间需要加锁的部分单独移出去做新函数，不然很丑而且容易忘记解锁
+8. **严重bug** - leader的applyCh读取不到数据了，导致一直超时，一直操作不了数据库。 
+
+原来是raft日志同步有问题，也就是在start后立即发起心跳引起的。
+
+也就是修改后导致添加了额外的心跳，那在发送心跳的过程中snapshot了，会导致preLogIndex比follower的lastIncludeIndex还要小，这种情况我提前考虑，然后返回xindex为realLastlogIndex
+
+9. ***改好久bug***leader 提交raft后没有达成了一致性但是没有apply上来，反倒是其余follower都apply上来了。
+
+检查了一圈，问题应该是raft在同步完成后，leader检查可否更改commitIndex，如果通过更改commintIndex，那会用条件变量唤醒apply，但是实际上到这一步后没有成功唤醒apply。
+
+原因是rf.applyVCond.Broadcast()唤醒不了在另一个go程上的applier，这种情况发送的不多，但是每次发送都是永远提交不上，原因也不知道。
+
+我才有一种可能是Broadcast()的时候，那个线程不在wait。所以把commitLeader()中唤醒的操作放到从之前的 每次增加commit唤醒 改到 函数最后再唤醒，这样减少applier压力。但是这样TestSpeed有时候过不了，还是改回原来，考虑其他优化
+
+考虑没有进入wait状态就阻塞的原因，去找阻塞再哪一句，发现在写入chan的时候阻塞了。有可能是server一直在读导致的异常阻塞，把server改成select非阻塞读取。
+
+另外chan写端阻塞可能是缓冲区的为0是非缓冲的，我把applyCh和map中的chan改为缓冲区是1。估计这个才是主要原因。
+
+
+
+### 3B
+
+### 要求： 
+
+测试程序将MaxraftState传递给您的StartKVServer()。
+
+MaxraftState指示持久RAFT状态允许的最大大小(以字节为单位)(包括日志，但不包括快照)。**将MaxraftState与Persister.RaftStateSize()**进行比较。当您的键/值服务器检测到RAFT状态大小接近此阈值时，它应该通过调用RAFT的Snapshot来保存快照。
+
+如果MaxraftState为-1，则不必创建快照。
+
+MaxraftState应用于RAFT作为第一个参数传递给Persister.Save()的GOB编码的字节。
+
+server重启的时候，从persister读取快照并且恢复
+
+1. 快照需要存储的信息和快照的时机考虑清楚，kvserver的重复检验必须跨越检查点，所以任何状态必须包含在快照中。可能快照需要请求表因为一恢复就要启动重复检验的功能，应该是需要保存kv数据库，也就是状态机的状态
+2. 快照中数据大写
+3. raft可能被改错，记得常回看看
+
+### 构思：
+
+#### 快照时机：
+
+考虑server和raft交互的时候，考虑server状态机和raft日志改变的时候。
+
+在raft通过applyCh提交给server的时候，检查是否快照。快照的时候设置这个index之前，所以在应用状态机之前检查快照
+
+#### 快照操作：
+
+1. 检查stateSize，如果超出就做快照。
+2. server做快照，需要保存数据库和请求表snapshot，保存index（因为之后还要传给让raft，且applyCh可能接受快照的，那时候需要比较快照的latest性）。然后把snapshot和index传给raft做快照，也就是保存raftstate
+3. 恢复操作，server恢复状态机、请求表，raft恢复state
+4. appCh可能会传条目，也可能传快照，分开处理。如果传的是快照，之前raftstate已经更新，判断快照合理性，应用快照。
+
+### 3B-bug
+
+1. raft提交一个snapshot并被server应用之后，又提交了一个相同index的Op，但内容是nil
+
+原因的是server主动快照时在新applyCh传入条目的应用之前拍的，也就是传入快照函数的index是新条目的index-1而不是index 
+
+2. 落后较多raft接受到RPC快照同步的时候，没有成功。仔细看原因是applCh写入snapshot的时候阻塞了。
+2. raft下标越界，可能原因是用chan的时候解锁，锁被抢走了，修改了lastIncludeIndex,当chan写完获取锁的时候，已经改变了raft的状态。
+
+对2 3bug的修改，主要是把安装快照的RPC中传给上层的chan放到最后处理，这时候PRC导致的状态更新已经完成了，chan放锁给其他的用来修改raft状态也没关系。
+
+所以说chan不仅要记得解锁，还锁，而且要考虑在chan解锁期间发送的不确定性问题
 
