@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -38,8 +39,8 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
-
+	maxraftstate      int // snapshot if log grows this big
+	lastIncludedIndex int // 快照的最后一个index
 	// Your definitions here.
 	database   map[string]string
 	requsetTab map[int64]requestEntry
@@ -47,8 +48,8 @@ type KVServer struct {
 	chanMap map[int]chan string
 }
 type requestEntry struct {
-	rpcID int
-	value string
+	RpcID int
+	Value string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -201,7 +202,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
-
+	kv.lastIncludedIndex = 0
 	// You may need initialization code here.
 	kv.database = make(map[string]string)
 	kv.requsetTab = make(map[int64]requestEntry)
@@ -209,7 +210,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	// You may need initialization code here.
-	//kv.receiveVCond = sync.NewCond(&kv.mu)
+
+	kv.readSnapshot(kv.rf.GetSnapshot())
 
 	go kv.receiver() // 接收raft apply的条目 并处理
 
@@ -221,21 +223,55 @@ func (kv *KVServer) receiver() {
 	for !kv.killed() {
 		select {
 		case recv_msg := <-kv.applyCh:
-			recvOp := recv_msg.Command.(Op)
-			// 应用
-			DPrintf("//// {S%v} receive,Optype: %v,{C%v},RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+			// Op
+			if recv_msg.CommandValid {
+				DPrintf("//// {S%v} receive Op,index[%v]", kv.me, recv_msg.CommandIndex)
+				if recv_msg.Command == nil {
+					DPrintf("{S%v} 空的recv_msg[%v]", kv.me, recv_msg)
+				}
+				recvOp := recv_msg.Command.(Op)
 
-			commentRet := kv.apply(recvOp)
-			// DPrintf("SERVER {server %v} success apply Optype: %v,ClientID: %v,RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+				DPrintf("{S%v} receive Op,client[%v],RpcID:[%v],Key [%v]", kv.me, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+				if recvOp.Optype != "Get" {
+					DPrintf("看看重复检查有没有问题{S%v} receive Op,Optype[%v],Key [%v],Value[%v]", kv.me, recvOp.Optype, recvOp.Key, recvOp.Value)
 
-			// 唤醒 返回结果
-			// 只有leader在处理RPC,只有通道还没被删除的时候需要返回
-			if _, isleader := kv.rf.GetState(); isleader {
+				}
+				// 检查快照
+				DPrintf("{S%v}检查缓存大小", kv.me)
+				if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate-8 {
+					// 缓存接近上限，启动快照
+					DPrintf("{S%v}缓存接近上限，快照", kv.me)
+					if ok, snapshot := kv.generateSnapshot(recv_msg.CommandIndex - 1); ok { //存的是这个index应用之前的状态
+						DPrintf("{S%v}快照完成，通知raft persist", kv.me)
+						kv.rf.Snapshot(recv_msg.CommandIndex-1, snapshot)
+					}
 
-				if ch, ok := kv.getChIfHas(recv_msg.CommandIndex); ok {
-					ch <- commentRet
-				} else {
-					DPrintf("{S%v} 没有这个通道了 {C%v},RpcID: %v", kv.me, recvOp.ClientID, recvOp.RpcID)
+				}
+
+				// 应用
+				commentRet := kv.apply(recvOp)
+				// DPrintf("SERVER {server %v} success apply Optype: %v,ClientID: %v,RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
+
+				// 唤醒 返回结果
+				// 只有leader在处理RPC,只有通道还没被删除的时候需要返回
+				if _, isleader := kv.rf.GetState(); isleader {
+
+					if ch, ok := kv.getChIfHas(recv_msg.CommandIndex); ok {
+						ch <- commentRet
+					} else {
+						DPrintf("{S%v} 没有这个通道了 {C%v},RpcID: %v", kv.me, recvOp.ClientID, recvOp.RpcID)
+					}
+
+				}
+
+			}
+
+			// Snapshot
+			if recv_msg.SnapshotValid {
+				DPrintf("//// {S%v} receive Snapshot,index: %v", kv.me, recv_msg.SnapshotIndex)
+				if ok := kv.snapshotValid(recv_msg.SnapshotIndex); ok {
+					DPrintf("{S%v}快照有效，开始应用到状态机", kv.me)
+					kv.readSnapshot(recv_msg.Snapshot)
 				}
 
 			}
@@ -252,11 +288,11 @@ func (kv *KVServer) apply(recvOp Op) string {
 	commentRet := "" // 操作结果
 
 	// 检查是否重复执行
-	if request_entry, ok := kv.requsetTab[recvOp.ClientID]; ok && recvOp.RpcID == request_entry.rpcID {
+	if request_entry, ok := kv.requsetTab[recvOp.ClientID]; ok && recvOp.RpcID == request_entry.RpcID {
 		// 已有的条目 直接返回结果
 		DPrintf("!!!! {S%v} cmd already apply Optype: %v,{C%v},RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
 		if recvOp.Optype == "Get" {
-			commentRet = request_entry.value
+			commentRet = request_entry.Value
 		}
 		return commentRet
 	}
@@ -270,22 +306,23 @@ func (kv *KVServer) apply(recvOp Op) string {
 	}
 	// 更新数据库
 	newEntry := requestEntry{
-		rpcID: recvOp.RpcID,
+		RpcID: recvOp.RpcID,
 	}
 	if recvOp.Optype == "Get" {
 		if value, ok := kv.database[recvOp.Key]; ok {
-			newEntry.value = value
+			newEntry.Value = value
 		} else {
-			newEntry.value = ""
+			newEntry.Value = ""
 		}
-		commentRet = newEntry.value
+		commentRet = newEntry.Value
 	}
 	// 更新表
 	kv.requsetTab[recvOp.ClientID] = newEntry
-	DPrintf("{S%v}更新表kv.requsetTab[%v] latest RPCid: %v ", kv.me, recvOp.ClientID, newEntry.rpcID)
+	DPrintf("{S%v}更新表kv.requsetTab[%v] latest RPCid: %v ", kv.me, recvOp.ClientID, newEntry.RpcID)
 	return commentRet
 }
 
+// 重复检验，查找client对应的rpc是否已经执行
 func (kv *KVServer) checkRpc(clientId int64, rpcId int) (bool, string) {
 	// 检查表
 	kv.mu.Lock()
@@ -293,8 +330,8 @@ func (kv *KVServer) checkRpc(clientId int64, rpcId int) (bool, string) {
 
 	// 已经执行RPC请求
 	equset_entry, ok := kv.requsetTab[clientId]
-	if ok && equset_entry.rpcID == rpcId {
-		return true, equset_entry.value
+	if ok && equset_entry.RpcID == rpcId {
+		return true, equset_entry.Value
 	}
 	//DPrintf("重复检测，ok: %v, equset_entry.rpcID: %v == rpcId: %v ", ok, equset_entry.rpcID, rpcId)
 	return false, ""
@@ -329,4 +366,78 @@ func (kv *KVServer) deleteCh(index int) {
 
 	delete(kv.chanMap, index)
 
+}
+
+func (kv *KVServer) generateSnapshot(index int) (bool, []byte) {
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if index <= kv.lastIncludedIndex {
+		return false, nil
+	}
+
+	// 更新lastIncludedIndex
+	kv.lastIncludedIndex = index
+
+	newBuf := new(bytes.Buffer)
+	newEncoder := labgob.NewEncoder(newBuf)
+
+	err := newEncoder.Encode(kv.lastIncludedIndex)
+	if err != nil {
+		DPrintf("{S[%d]} encode lastIncludedIndex error: %v\n", kv.me, err)
+		return false, nil
+	}
+	err = newEncoder.Encode(kv.requsetTab)
+	if err != nil {
+		DPrintf("{S[%d]} encode requsetTab error: %v\n", kv.me, err)
+		return false, nil
+	}
+	err = newEncoder.Encode(kv.database)
+	if err != nil {
+		DPrintf("{S[%d]} encode database error: %v\n", kv.me, err)
+		return false, nil
+	}
+
+	snapshot := newBuf.Bytes()
+
+	DPrintf("{S%v} persist 快照,lastIncludedIndex[%v]", kv.me, kv.lastIncludedIndex)
+
+	return true, snapshot
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+
+	if data == nil || len(data) < 1 { // bootstrap without any state? 空指针和空值
+		return
+	}
+
+	newBuf := bytes.NewBuffer(data)
+	newDecoder := labgob.NewDecoder(newBuf)
+	var old_lastincludedindex int
+	var old_requsetTab map[int64]requestEntry
+	var old_database map[string]string
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if newDecoder.Decode(&old_lastincludedindex) != nil ||
+		newDecoder.Decode(&old_requsetTab) != nil ||
+		newDecoder.Decode(&old_database) != nil {
+		// 无法解码
+		DPrintf("{S%d}: Decode error", kv.me)
+	} else {
+		kv.lastIncludedIndex = old_lastincludedindex
+		kv.requsetTab = old_requsetTab
+		kv.database = old_database
+		DPrintf("{S%d}: Decode success,old_lastincludedindex[%v]", kv.me, kv.lastIncludedIndex)
+	}
+
+}
+
+func (kv *KVServer) snapshotValid(index int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	return index > kv.lastIncludedIndex
 }
