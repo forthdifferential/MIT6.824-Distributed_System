@@ -12,7 +12,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -43,7 +43,7 @@ type KVServer struct {
 	lastIncludedIndex int // 快照的最后一个index
 	// Your definitions here.
 	database   map[string]string
-	requsetTab map[int64]requestEntry
+	requestTab map[int64]requestEntry
 
 	chanMap map[int]chan string
 }
@@ -206,7 +206,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.lastIncludedIndex = 0
 	// You may need initialization code here.
 	kv.database = make(map[string]string)
-	kv.requsetTab = make(map[int64]requestEntry)
+	kv.requestTab = make(map[int64]requestEntry)
 	kv.chanMap = make(map[int]chan string)
 	kv.applyCh = make(chan raft.ApplyMsg, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
@@ -282,7 +282,7 @@ func (kv *KVServer) apply(recvOp Op) string {
 	commentRet := "" // 操作结果
 
 	// 检查是否重复执行
-	if request_entry, ok := kv.requsetTab[recvOp.ClientID]; ok && recvOp.RpcID == request_entry.RpcID {
+	if request_entry, ok := kv.requestTab[recvOp.ClientID]; ok && recvOp.RpcID == request_entry.RpcID {
 		// 已有的条目 直接返回结果
 		DPrintf("!!!! {S%v} cmd already apply Optype: %v,{C%v},RpcID: %v,Key %v", kv.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID, recvOp.Key)
 		if recvOp.Optype == "Get" {
@@ -291,13 +291,13 @@ func (kv *KVServer) apply(recvOp Op) string {
 		return commentRet
 	}
 
-	// 执行新的条目
+	// 执行新的条目，更新数据库
 	if recvOp.Optype == "Put" {
 		kv.database[recvOp.Key] = recvOp.Value
 	} else if recvOp.Optype == "Append" {
 		kv.database[recvOp.Key] += recvOp.Value
 	}
-	// 更新数据库
+
 	newEntry := requestEntry{
 		RpcID: recvOp.RpcID,
 	}
@@ -309,9 +309,10 @@ func (kv *KVServer) apply(recvOp Op) string {
 		}
 		commentRet = newEntry.Value
 	}
+
 	// 更新表
-	kv.requsetTab[recvOp.ClientID] = newEntry
-	DPrintf("{S%v}更新表kv.requsetTab[%v] latest RPCid: %v ", kv.me, recvOp.ClientID, newEntry.RpcID)
+	kv.requestTab[recvOp.ClientID] = newEntry
+	DPrintf("{S%v}更新表kv.requestTab[%v] latest RPCid: %v ", kv.me, recvOp.ClientID, newEntry.RpcID)
 	return commentRet
 }
 
@@ -322,7 +323,7 @@ func (kv *KVServer) checkRpc(clientId int64, rpcId int) (bool, string) {
 	defer kv.mu.Unlock()
 
 	// 已经执行RPC请求
-	equset_entry, ok := kv.requsetTab[clientId]
+	equset_entry, ok := kv.requestTab[clientId]
 	if ok && equset_entry.RpcID == rpcId {
 		return true, equset_entry.Value
 	}
@@ -380,9 +381,9 @@ func (kv *KVServer) generateSnapshot(index int) (bool, []byte) {
 		DPrintf("{S[%d]} encode lastIncludedIndex error: %v\n", kv.me, err)
 		return false, nil
 	}
-	err = newEncoder.Encode(kv.requsetTab)
+	err = newEncoder.Encode(kv.requestTab)
 	if err != nil {
-		DPrintf("{S[%d]} encode requsetTab error: %v\n", kv.me, err)
+		DPrintf("{S[%d]} encode requestTab error: %v\n", kv.me, err)
 		return false, nil
 	}
 	err = newEncoder.Encode(kv.database)
@@ -406,20 +407,20 @@ func (kv *KVServer) readSnapshot(data []byte) {
 	newBuf := bytes.NewBuffer(data)
 	newDecoder := labgob.NewDecoder(newBuf)
 	var old_lastincludedindex int
-	var old_requsetTab map[int64]requestEntry
+	var old_requestTab map[int64]requestEntry
 	var old_database map[string]string
 
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
 	if newDecoder.Decode(&old_lastincludedindex) != nil ||
-		newDecoder.Decode(&old_requsetTab) != nil ||
+		newDecoder.Decode(&old_requestTab) != nil ||
 		newDecoder.Decode(&old_database) != nil {
 		// 无法解码
 		DPrintf("{S%d}: Decode error", kv.me)
 	} else {
 		kv.lastIncludedIndex = old_lastincludedindex
-		kv.requsetTab = old_requsetTab
+		kv.requestTab = old_requestTab
 		kv.database = old_database
 		DPrintf("{S%d}: Decode success,old_lastincludedindex[%v]", kv.me, kv.lastIncludedIndex)
 	}

@@ -1,5 +1,7 @@
 package shardctrler
 
+import "time"
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -23,19 +25,31 @@ const NShards = 10
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type Config struct {
-	Num    int              // config number
-	Shards [NShards]int     // shard -> gid
-	Groups map[int][]string // gid -> servers[]
+	Num    int              // config number 配置id
+	Shards [NShards]int     // shard -> gid 表示每个切片素在的group
+	Groups map[int][]string // gid -> servers[] 表示每个group包含的servers
 }
 
 const (
 	OK = "OK"
+
+	JoinType  = "Join"
+	LeaveType = "Leave"
+	MoveType  = "Move"
+	QueryType = "Query"
+
+	JoinOutTime  = 500 * time.Millisecond
+	LeaveOutTime = 500 * time.Millisecond
+	MoveOutTime  = 500 * time.Millisecond
+	QueryOutTime = 500 * time.Millisecond
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers  map[int][]string // new GID -> servers mappings
+	ClientId int64
+	RpcId    int
 }
 
 type JoinReply struct {
@@ -44,7 +58,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs     []int
+	ClientId int64
+	RpcId    int
 }
 
 type LeaveReply struct {
@@ -53,8 +69,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard    int
+	GID      int
+	ClientId int64
+	RpcId    int
 }
 
 type MoveReply struct {
@@ -63,7 +81,9 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num      int // desired config number
+	ClientId int64
+	RpcId    int
 }
 
 type QueryReply struct {
