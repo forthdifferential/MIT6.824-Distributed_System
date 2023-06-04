@@ -1,5 +1,7 @@
 package shardkv
 
+import "time"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -14,6 +16,20 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeOut     = "ErrTimeOut"
+
+	GetOutTime       = 500 * time.Millisecond
+	PutAppendOutTime = 500 * time.Millisecond
+
+	// shard状态
+	StateOk   = "OK"
+	StateOut  = "Out"  // 等待移走
+	StateIn   = "In"   // 等待移入
+	StateWait = "Wait" // 移入完成，等待告知ex-ower删除
+
+	ErrConfigNumNotMatch = "ConfigNumNotMatch"
+	ErrConfigNumNotReady = "ConfigNumNotReady"
+	ErrConfigNumOut      = "ErrConfigNumOut"
 )
 
 type Err string
@@ -21,12 +37,12 @@ type Err string
 // Put or Append
 type PutAppendArgs struct {
 	// You'll have to add definitions here.
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Key    string
+	Value  string
+	Optype string // "Put" or "Append"
+
+	ClientId int64
+	RpcId    int
 }
 
 type PutAppendReply struct {
@@ -36,6 +52,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ClientId int64
+	RpcId    int
 }
 
 type GetReply struct {
