@@ -73,6 +73,7 @@ type ShardKV struct {
 	// configchanging int32
 }
 
+// 客户请求重复检验记录条目类型
 type requestEntry struct {
 	RpcID int
 	Value string
@@ -223,9 +224,9 @@ func (kv *ShardKV) applier() {
 
 				// 检查快照
 				DPrintf("[Gid:%v]{S%v}检查缓存大小", kv.gid, kv.me)
-				if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate-8 {
+				if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate {
 					// 缓存接近上限，启动快照
-					DPrintf("[Gid:%v]{S%v}缓存接近上限，快照", kv.gid, kv.me)
+					DPrintf("[Gid:%v]{S%v}缓存接近上限StateSize[%v]，快照", kv.gid, kv.me, kv.rf.GetStateSize())
 					if ok, snapshot := kv.generateSnapshot(recv_msg.CommandIndex - 1); ok { //存的是这个index应用之前的状态
 						DPrintf("[Gid:%v]{S%v}快照完成，通知raft persist", kv.gid, kv.me)
 						kv.rf.Snapshot(recv_msg.CommandIndex-1, snapshot)
@@ -273,6 +274,8 @@ func (kv *ShardKV) applier() {
 							DPrintf("[Gid:%v]{S%v} 没有这个通道了 DelShards", kv.gid, kv.me)
 						}
 					}
+				case "Empty":
+					DPrintf("[Gid:%v]{S%v} case Empty", kv.gid, kv.me)
 				}
 			}
 			// Snapshot
@@ -479,8 +482,10 @@ func (kv *ShardKV) applyDelShards(recvOp Op) ChanReply {
 	}
 	// 删除shard对应的数据,修改shard状态为OK
 	for _, shard := range recvOp.Shards {
-		kv.database[shard] = map[string]string{}
-		kv.requestTab[shard] = map[int64]requestEntry{}
+		//kv.database[shard] = map[string]string{}
+		//kv.requestTab[shard] = map[int64]requestEntry{}
+		kv.database[shard] = nil
+		kv.requestTab[shard] = nil
 		kv.shardStates[shard] = StateOk
 	}
 
@@ -576,6 +581,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	go kv.shardsPullChecker()
 	go kv.shardDelChecker()
 
+	go kv.curTermLogEmptyChecker()
+
 	return kv
 }
 
@@ -653,6 +660,25 @@ func (kv *ShardKV) shardDelChecker() {
 			go kv.delShardsLeader(gid, shards, curConfigNum)
 		}
 
+	}
+}
+
+// 定时检测 raft 层的 leader 是否拥有当前 term 的日志，如果没有则提交一条空日志，
+// 这使得新 leader 的状态机能够迅速达到最新状态，从而避免多 raft 组间的活锁状态
+func (kv *ShardKV) curTermLogEmptyChecker() {
+	for !kv.killed() {
+		time.Sleep(50 * time.Millisecond)
+		// 只有leader发起配置更换
+		if _, isLeader := kv.rf.GetState(); !isLeader {
+			continue
+		}
+		if !kv.rf.HasLogInCurTerm() {
+			option := Op{
+				Optype: "Empty",
+			}
+			// 添加 shard 到 raft集群
+			kv.rf.Start(option)
+		}
 	}
 }
 
@@ -763,10 +789,6 @@ func (kv *ShardKV) delShardsLeader(gid int, shards []int, curConfigNum int) {
 				// 把Op的有效性判断，交给apply
 				if ok && (reply.Err == OK || reply.Err == ErrConfigNumOut) {
 					// 修改删完的shard状态到raft中同步
-					// kv.noWaitShardsLeader(shards)
-					// kv.mu.Lock()
-					// // 判断已经改为Ok
-					// kv.mu.Unlock()
 					option := Op{
 						Optype:    "NoWaitShards",
 						Shards:    shards,
@@ -798,8 +820,7 @@ func (kv *ShardKV) delShardsLeader(gid int, shards []int, curConfigNum int) {
 }
 
 type PullShard_Args struct {
-	Shards []int
-	// Gid          int
+	Shards       []int
 	NewConfigNum int
 }
 type PullShard_Reply struct {
@@ -961,23 +982,17 @@ func (kv *ShardKV) generateSnapshot(index int) (bool, []byte) {
 		DPrintf("[Gid:%v]{S[%d]} encode database error: %v\n", kv.gid, kv.me, err)
 		return false, nil
 	}
-	err = newEncoder.Encode(kv.oldConfig)
-	if err != nil {
-		DPrintf("[Gid:%v]{S[%d]} encode database error: %v\n", kv.gid, kv.me, err)
-		return false, nil
-	}
+	// err = newEncoder.Encode(kv.oldConfig)
+	// if err != nil {
+	// 	DPrintf("[Gid:%v]{S[%d]} encode database error: %v\n", kv.gid, kv.me, err)
+	// 	return false, nil
+	// }
 
 	err = newEncoder.Encode(kv.shardStates)
 	if err != nil {
 		DPrintf("[Gid:%v]{S[%d]} encode database error: %v\n", kv.gid, kv.me, err)
 		return false, nil
 	}
-
-	//err = newEncoder.Encode(kv.configchanging)
-	//if err != nil {
-	//	DPrintf("[Gid:%v]{S[%d]} encode database error: %v\n", kv.gid, kv.me, err)
-	// 	return false, nil
-	// }
 
 	snapshot := newBuf.Bytes()
 
@@ -997,7 +1012,7 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 	var old_requestTab [shardctrler.NShards]map[int64]requestEntry
 	var old_database [shardctrler.NShards]map[string]string
 	var old_curConfig shardctrler.Config
-	var old_oldConfig shardctrler.Config
+	//var old_oldConfig shardctrler.Config
 	var old_shardStates [shardctrler.NShards]string
 	//var old_configchanging int32
 
@@ -1008,10 +1023,8 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 		newDecoder.Decode(&old_requestTab) != nil ||
 		newDecoder.Decode(&old_database) != nil ||
 		newDecoder.Decode(&old_curConfig) != nil ||
-		newDecoder.Decode(&old_oldConfig) != nil ||
+		//newDecoder.Decode(&old_oldConfig) != nil ||
 		newDecoder.Decode(&old_shardStates) != nil {
-		// newDecoder.Decode(&old_configchanging) != nil
-
 		// 无法解码
 		DPrintf("[Gid:%v]{S%d}: Decode error", kv.gid, kv.me)
 	} else {
@@ -1019,9 +1032,11 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 		kv.requestTab = old_requestTab
 		kv.database = old_database
 		kv.curConfig = old_curConfig
-		kv.oldConfig = old_oldConfig
+		//kv.oldConfig = old_oldConfig
 		kv.shardStates = old_shardStates
-		// kv.configchanging = old_configchanging
+		if old_curConfig.Num > 1 {
+			kv.oldConfig = kv.mck.Query(old_curConfig.Num - 1)
+		}
 		DPrintf("[Gid:%v]{S%d}: 应用快照 success,old_lastincludedindex[%v]", kv.gid, kv.me, kv.lastIncludedIndex)
 	}
 }

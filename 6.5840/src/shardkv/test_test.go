@@ -1,15 +1,18 @@
 package shardkv
 
-import "6.5840/porcupine"
-import "6.5840/models"
-import "testing"
-import "strconv"
-import "time"
-import "fmt"
-import "sync/atomic"
-import "sync"
-import "math/rand"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"math/rand"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"6.5840/models"
+	"6.5840/porcupine"
+)
 
 const linearizabilityCheckTimeout = 1 * time.Second
 
@@ -784,21 +787,23 @@ func TestChallenge1Delete(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		check(t, ck, ka[i], va[i])
 	}
-
+	DPrintf("开始检查大小")
 	total := 0
 	for gi := 0; gi < cfg.ngroups; gi++ {
 		for i := 0; i < cfg.n; i++ {
 			raft := cfg.groups[gi].saved[i].RaftStateSize()
 			snap := len(cfg.groups[gi].saved[i].ReadSnapshot())
 			total += raft + snap
+			DPrintf("[gi%v][n%v]:raft[%v],snap[%v]", gi, i, raft, snap)
 		}
 	}
 
 	// 27 keys should be stored once.
 	// 3 keys should also be stored in client dup tables.
 	// everything on 3 replicas.
-	// plus slop.
+	// plus slop脏数据.
 	expected := 3 * (((n - 3) * 1000) + 2*3*1000 + 6000)
+	DPrintf("结束检查大小total%v，expected%v", total, expected)
 	if total > expected {
 		t.Fatalf("snapshot + persisted Raft state are too big: %v > %v\n", total, expected)
 	}
