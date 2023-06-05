@@ -217,22 +217,9 @@ func (kv *ShardKV) applier() {
 		case recv_msg := <-kv.applyCh:
 			// Op
 			if recv_msg.CommandValid {
-
 				recvOp := recv_msg.Command.(Op)
-
 				DPrintf("<-//// [Gid:%v]{S%v} receive Op,Optype:[%v], index[%v]", kv.gid, kv.me, recvOp.Optype, recv_msg.CommandIndex)
 
-				// 检查快照
-				DPrintf("[Gid:%v]{S%v}检查缓存大小", kv.gid, kv.me)
-				if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate {
-					// 缓存接近上限，启动快照
-					DPrintf("[Gid:%v]{S%v}缓存接近上限StateSize[%v]，快照", kv.gid, kv.me, kv.rf.GetStateSize())
-					if ok, snapshot := kv.generateSnapshot(recv_msg.CommandIndex - 1); ok { //存的是这个index应用之前的状态
-						DPrintf("[Gid:%v]{S%v}快照完成，通知raft persist", kv.gid, kv.me)
-						kv.rf.Snapshot(recv_msg.CommandIndex-1, snapshot)
-					}
-				}
-				DPrintf("[Gid:%v]{S%v}快照完成，继续处理recv_msg.CommandIndex[%v]", kv.gid, kv.me, recv_msg.CommandIndex)
 				// 应用
 				// commentRet := kv.apply(recvOp)
 				//DPrintf("[Gid:%v]{S%v}开始应用", kv.gid, kv.me)
@@ -277,6 +264,18 @@ func (kv *ShardKV) applier() {
 				case "Empty":
 					DPrintf("[Gid:%v]{S%v} case Empty", kv.gid, kv.me)
 				}
+
+				// 检查快照
+				DPrintf("[Gid:%v]{S%v}检查缓存大小", kv.gid, kv.me)
+				if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate {
+					// 缓存接近上限，启动快照
+					DPrintf("[Gid:%v]{S%v}缓存接近上限StateSize[%v]，快照", kv.gid, kv.me, kv.rf.GetStateSize())
+					if ok, snapshot := kv.generateSnapshot(recv_msg.CommandIndex); ok { //存的是这个index应用之前的状态
+						DPrintf("[Gid:%v]{S%v}快照完成，通知raft persist", kv.gid, kv.me)
+						kv.rf.Snapshot(recv_msg.CommandIndex, snapshot)
+					}
+				}
+				DPrintf("[Gid:%v]{S%v}快照完成，继续处理recv_msg.CommandIndex[%v]", kv.gid, kv.me, recv_msg.CommandIndex)
 			}
 			// Snapshot
 			if recv_msg.SnapshotValid {

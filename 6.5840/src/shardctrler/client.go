@@ -56,6 +56,7 @@ func (ck *Clerk) Query(num int) Config {
 	}
 }
 
+// for tester
 func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.

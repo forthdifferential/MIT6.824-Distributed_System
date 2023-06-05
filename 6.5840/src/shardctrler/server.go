@@ -58,7 +58,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 	// 重复检测
 	if ok, _ := sc.checkRpc(args.ClientId, args.RpcId); ok {
-		DPrintf("重复RPC: %v", args.RpcId)
+		// DPrintf("重复RPC: %v", args.RpcId)
 		reply.WrongLeader = false
 		return
 	}
@@ -82,15 +82,15 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// 等待apply后回复
 
 	ch := sc.getOrMakeCh(index)
-	DPrintf("////{S%v}等待一致性通过或超时,Optype: Join,{C%v},RpcID: %v,servers[%v]", sc.me, args.ClientId, args.RpcId, args.Servers)
+	//DPrintf("////{S%v}等待一致性通过或超时,Optype: Join,{C%v},RpcID: %v,servers[%v]", sc.me, args.ClientId, args.RpcId, args.Servers)
 
 	select {
 	case <-timer.C:
-		DPrintf("{S%v} 超时Join, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		// DPrintf("[SC]{S%v} 超时Join, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
 		reply.WrongLeader = true
 
 	case <-ch:
-		DPrintf("{S%v} 成功Join, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		DPrintf("[SC]{S%v} 成功Join, {C%v} rpcId: %v,configNum: %v", sc.me, args.ClientId, args.RpcId, sc.configs[len(sc.configs)-1].Num)
 		reply.WrongLeader = false
 	}
 
@@ -108,7 +108,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 	// 重复检测
 	if ok, _ := sc.checkRpc(args.ClientId, args.RpcId); ok {
-		DPrintf("重复RPC: %v", args.RpcId)
+		// DPrintf("重复RPC: %v", args.RpcId)
 		reply.WrongLeader = false
 		return
 	}
@@ -132,15 +132,15 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// 等待apply后回复
 
 	ch := sc.getOrMakeCh(index)
-	DPrintf("////{S%v}等待一致性通过或超时,Optype: Leave,{C%v},RpcID: %v,leaveGIDs[%v]", sc.me, args.ClientId, args.RpcId, args.GIDs)
+	// DPrintf("////{S%v}等待一致性通过或超时,Optype: Leave,{C%v},RpcID: %v,leaveGIDs[%v]", sc.me, args.ClientId, args.RpcId, args.GIDs)
 
 	select {
 	case <-timer.C:
-		DPrintf("{S%v} 超时Leave, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		// DPrintf("{S%v} 超时Leave, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
 		reply.WrongLeader = true
 
 	case <-ch:
-		DPrintf("{S%v} 成功Leave, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		DPrintf("[SC]{S%v} 成功Leave, {C%v} rpcId: %v, configNum: %v", sc.me, args.ClientId, args.RpcId, sc.configs[len(sc.configs)-1].Num)
 		reply.WrongLeader = false
 	}
 
@@ -158,7 +158,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 	// 重复检测
 	if ok, _ := sc.checkRpc(args.ClientId, args.RpcId); ok {
-		DPrintf("重复RPC: %v", args.RpcId)
+		// DPrintf("重复RPC: %v", args.RpcId)
 		reply.WrongLeader = false
 		return
 	}
@@ -183,15 +183,15 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// 等待apply后回复
 
 	ch := sc.getOrMakeCh(index)
-	DPrintf("////{S%v}等待一致性通过或超时,Optype: Move,{C%v},RpcID: %v", sc.me, args.ClientId, args.RpcId)
+	// DPrintf("////{S%v}等待一致性通过或超时,Optype: Move,{C%v},RpcID: %v", sc.me, args.ClientId, args.RpcId)
 
 	select {
 	case <-timer.C:
-		DPrintf("{S%v} 超时Move, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		// DPrintf("{S%v} 超时Move, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
 		reply.WrongLeader = true
 
 	case <-ch:
-		DPrintf("{S%v} 成功Move, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		DPrintf("[SC]{S%v} 成功Move, {C%v} rpcId: %v,configNUm: %v", sc.me, args.ClientId, args.RpcId, sc.configs[len(sc.configs)-1].Num)
 		reply.WrongLeader = false
 	}
 
@@ -208,9 +208,10 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	}
 
 	// 重复检测
-	if ok, _ := sc.checkRpc(args.ClientId, args.RpcId); ok {
-		DPrintf("重复RPC: %v", args.RpcId)
+	if ok, config := sc.checkRpc(args.ClientId, args.RpcId); ok {
+		// DPrintf("重复RPC: %v", args.RpcId)
 		reply.WrongLeader = false
+		reply.Config = config
 		return
 	}
 
@@ -233,15 +234,15 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// 等待apply后回复
 
 	ch := sc.getOrMakeCh(index)
-	DPrintf("////{S%v}等待一致性通过或超时,Optype: Query,{C%v},RpcID: %v", sc.me, args.ClientId, args.RpcId)
+	// DPrintf("////{S%v}等待一致性通过或超时,Optype: Query,{C%v},RpcID: %v", sc.me, args.ClientId, args.RpcId)
 
 	select {
 	case <-timer.C:
-		DPrintf("{S%v} 超时Query, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		// DPrintf("{S%v} 超时Query, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
 		reply.WrongLeader = true
 
 	case config_query := <-ch:
-		DPrintf("{S%v} 成功Query, {C%v} rpcId: %v", sc.me, args.ClientId, args.RpcId)
+		DPrintf("[SC]{S%v} 成功Query, {C%v} rpcId: %v,cofigNum: %v,config[%v]", sc.me, args.ClientId, args.RpcId, config_query.Num, config_query)
 		reply.WrongLeader = false
 		reply.Config = config_query
 	}
@@ -294,7 +295,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 }
 
 func (sc *ShardCtrler) reBalance(gids []int) [NShards]int {
-	DPrintf("{sc%v} reBalance,gids[%v]", sc.me, gids)
+	// DPrintf("{sc%v} reBalance,gids[%v]", sc.me, gids)
 	serversNum := len(gids)
 	if serversNum == 0 {
 		return [NShards]int{}
@@ -317,7 +318,7 @@ func (sc *ShardCtrler) reBalance(gids []int) [NShards]int {
 		for i := 0; i < left; i++ {
 			newShards[average*serversNum+i] = gids[i]
 		}
-		DPrintf("{sc%v} reBalance初始化,newShards[%v]", sc.me, newShards)
+		// DPrintf("{sc%v} reBalance初始化,newShards[%v]", sc.me, newShards)
 		return newShards
 
 	} else {
@@ -372,7 +373,7 @@ func (sc *ShardCtrler) reBalance(gids []int) [NShards]int {
 				}
 			}
 		}
-		DPrintf("{sc%v} reBalance删减完成,newShards[%v],temp_shards[%v]", sc.me, newShards, temp_shards)
+		// DPrintf("{sc%v} reBalance删减完成,newShards[%v],temp_shards[%v]", sc.me, newShards, temp_shards)
 		// 增添到averge 刚好到temp_shards用完
 		for u, j := 0, 0; u < serversNum && j < len(temp_shards); u++ {
 			for num_pergid[gids[u]] < average && j < len(temp_shards) {
@@ -381,7 +382,7 @@ func (sc *ShardCtrler) reBalance(gids []int) [NShards]int {
 				num_pergid[gids[u]]++
 			}
 		}
-		DPrintf("{sc%v} reBalance增添完成,newShards[%v],temp_shards[%v]", sc.me, newShards, temp_shards)
+		// DPrintf("{sc%v} reBalance增添完成,newShards[%v],temp_shards[%v]", sc.me, newShards, temp_shards)
 	}
 
 	return newShards
@@ -395,7 +396,7 @@ func (sc *ShardCtrler) apply(recvOp Op) Config {
 	// 检查是否重复执行
 	if request_entry, ok := sc.requestTab[recvOp.ClientID]; ok && recvOp.RpcID == request_entry.RpcID {
 		// 已有的条目 直接返回结果
-		DPrintf("!!!! {S%v} cmd already apply Optype: %v,{C%v},RpcID: %v", sc.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID)
+		// DPrintf("!!!! {S%v} cmd already apply Optype: %v,{C%v},RpcID: %v", sc.me, recvOp.Optype, recvOp.ClientID, recvOp.RpcID)
 		if recvOp.Optype == QueryType {
 			commentRet = request_entry.Config
 		}
@@ -433,7 +434,7 @@ func (sc *ShardCtrler) apply(recvOp Op) Config {
 			Groups: newGroup,
 		}
 		sc.configs = append(sc.configs, newConfig)
-		DPrintf("{sc%v} Join apply,shards[%v]", sc.me, newShards)
+		// DPrintf("{sc%v} Join apply,shards[%v]", sc.me, newShards)
 	case LeaveType:
 		// 当前config
 		lastConfig := sc.configs[len(sc.configs)-1]
@@ -466,7 +467,7 @@ func (sc *ShardCtrler) apply(recvOp Op) Config {
 			Groups: newGroup,
 		}
 		sc.configs = append(sc.configs, newConfig)
-		DPrintf("{sc%v} Leave apply,shards[%v]", sc.me, newShards)
+		// DPrintf("{sc%v} Leave apply,shards[%v]", sc.me, newShards)
 	case MoveType:
 		// 当前config
 		lastConfig := sc.configs[len(sc.configs)-1]
@@ -491,11 +492,11 @@ func (sc *ShardCtrler) apply(recvOp Op) Config {
 			Groups: newGroup,
 		}
 		sc.configs = append(sc.configs, newConfig)
-		DPrintf("{sc%v} Move apply,shards[%v]", sc.me, newShards)
+		// DPrintf("{sc%v} Move apply,shards[%v]", sc.me, newShards)
 	case QueryType:
 		// do nothing
 	default:
-		DPrintf("{sc} undeclared RPC type")
+		// DPrintf("{sc} undeclared RPC type")
 	}
 
 	// QueryType
@@ -509,11 +510,11 @@ func (sc *ShardCtrler) apply(recvOp Op) Config {
 			newEntry.Config = sc.configs[len(sc.configs)-1]
 		}
 		commentRet = newEntry.Config
-		DPrintf("{sc%v} Query apply,config[%v]", sc.me, newEntry.Config)
+		// DPrintf("{sc%v} Query apply,config[%v]", sc.me, newEntry.Config)
 	}
 	// 更新表
 	sc.requestTab[recvOp.ClientID] = newEntry
-	DPrintf("{S%v}更新表kv.requestTab[%v] latest RPCid: %v ", sc.me, recvOp.ClientID, newEntry.RpcID)
+	// DPrintf("{S%v}更新表kv.requestTab[%v] latest RPCid: %v ", sc.me, recvOp.ClientID, newEntry.RpcID)
 	return commentRet
 }
 
@@ -522,10 +523,10 @@ func (sc *ShardCtrler) receiver() {
 		select {
 		case recv_msg := <-sc.applyCh:
 			if recv_msg.CommandValid {
-				DPrintf("{sc%v} receive Op,index[%v]", sc.me, recv_msg.CommandIndex)
+				// DPrintf("{sc%v} receive Op,index[%v]", sc.me, recv_msg.CommandIndex)
 
 				recvOp := recv_msg.Command.(Op)
-				DPrintf("{sc%v} recvOp: [%v]", sc.me, recvOp.Optype)
+				// DPrintf("{sc%v} recvOp: [%v]", sc.me, recvOp.Optype)
 
 				// 应用
 				commentRet := sc.apply(recvOp)
@@ -563,7 +564,7 @@ func (sc *ShardCtrler) getOrMakeCh(index int) chan Config {
 
 	if _, ok := sc.chanMap[index]; !ok {
 		sc.chanMap[index] = make(chan Config, 1)
-		DPrintf("{S%v}创建chan[index: %v]", sc.me, index)
+		// DPrintf("{S%v}创建chan[index: %v]", sc.me, index)
 	}
 
 	return sc.chanMap[index]
@@ -575,7 +576,7 @@ func (sc *ShardCtrler) getChIfHas(index int) (chan Config, bool) {
 
 	ch, ok := sc.chanMap[index]
 	if !ok {
-		DPrintf("{S%v}不存在chan[index: %v]", sc.me, index)
+		// DPrintf("{S%v}不存在chan[index: %v]", sc.me, index)
 	}
 	return ch, ok
 }

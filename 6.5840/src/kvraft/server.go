@@ -137,7 +137,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	// 等待apply后回复
 	ch := kv.getOrMakeCh(index)
-	DPrintf("{S%v}提交，等待一致性通过或超时,Optype: Get,{C%v},RpcID: %v,Key %v", kv.me, args.ClientID, args.RpcID, args.Key)
+	DPrintf("{S%v}提交，等待一致性通过或超时,Optype: PutAppend,{C%v},RpcID: %v,Key %v", kv.me, args.ClientID, args.RpcID, args.Key)
 
 	select {
 	case <-timer.C:

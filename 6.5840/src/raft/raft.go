@@ -994,3 +994,13 @@ func (rf *Raft) applier() {
 	}
 
 }
+
+// for lab4B
+// 在新leader当选的时候添加一条当前term空日志，保证leader状态机迅速达到同步
+func (rf *Raft) HasLogInCurTerm() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	hasLogInCurTerm := rf.GetlastLog().Term == rf.currentTerm
+	return hasLogInCurTerm
+}
